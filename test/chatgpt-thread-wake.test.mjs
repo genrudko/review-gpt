@@ -816,6 +816,20 @@ test('requires real conversation signals before treating a thread as ready', asy
     ),
     true,
   );
+  assert.equal(
+    conversationUrlsReferToSameThread(
+      'https://chatgpt.com/g/g-p-project-slug/c/example',
+      'https://chatgpt.com/c/example',
+    ),
+    true,
+  );
+  assert.equal(
+    conversationUrlsReferToSameThread(
+      'https://chatgpt.com/c/example',
+      'https://chatgpt.com/g/g-p-project-slug/c/example',
+    ),
+    true,
+  );
   assert.deepEqual(
     pickBestThreadTarget(
       [

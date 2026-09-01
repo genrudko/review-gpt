@@ -23,15 +23,18 @@ const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
 function normalizeConversationUrl(chatUrl: string): string {
   try {
     const parsed = new URL(chatUrl);
-    const match = parsed.pathname.match(/^\/c\/([^/?#]+)\/?$/u);
-    const chatId = match?.[1];
+    const normalizedPath = parsed.pathname.replace(/\/+$/u, '');
+    const match = normalizedPath.match(/^(?:\/c\/([^/?#]+)|\/g\/([^/?#]+)\/c\/([^/?#]+))$/u);
+    const chatId = match?.[1] ?? match?.[3];
     if (!chatId) {
       throw new Error('missing-chat-id');
     }
-    return `${parsed.origin}/c/${chatId}`;
+    return match?.[2]
+      ? `${parsed.origin}/g/${match[2]}/c/${chatId}`
+      : `${parsed.origin}/c/${chatId}`;
   } catch {
     throw new Error(
-      `Expected a full ChatGPT conversation URL like https://chatgpt.com/c/<thread-id>; received ${chatUrl}`,
+      `Expected a full ChatGPT conversation URL like https://chatgpt.com/c/<thread-id> or https://chatgpt.com/g/<project>/c/<thread-id>; received ${chatUrl}`,
     );
   }
 }
@@ -195,7 +198,7 @@ export function createThreadCli() {
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; fail closed unless the same target, response, and artifacts are present.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to export.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id> or /g/<project>/c/<thread-id>) to export.'),
       output: z.string().describe('Output JSON file path.'),
     }),
     examples: [
@@ -228,7 +231,7 @@ export function createThreadCli() {
       attachmentText: z.string().optional().describe('Legacy attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; constrain the download to that assistant turn and artifact identity.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) containing the attachment.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id> or /g/<project>/c/<thread-id>) containing the attachment.'),
       outputDir: z.string().describe('Directory where the download should be written.'),
       timeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
     }),
@@ -295,7 +298,7 @@ export function createThreadCli() {
     description: 'Capture a structured diagnostics bundle for a ChatGPT thread send/wake failure from the managed browser.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to inspect.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id> or /g/<project>/c/<thread-id>) to inspect.'),
       commandLabel: z.string().default('review:gpt').describe('Short label for the failing command, used in the diagnostics bundle name.'),
       exitCode: z.number().optional().describe('Optional exit code recorded in the diagnostics status file.'),
       logFile: z.string().optional().describe('Optional failing command log file to copy into the diagnostics bundle.'),
@@ -342,7 +345,7 @@ export function createThreadCli() {
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       captureMetadata: z.string().optional().describe('Exact capture metadata emitted by send; reuse its target and fail closed if a completed response or artifact identity is ambiguous.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id> or /g/<project>/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, wake trusts inherited CODEX_HOME before using metadata-only local discovery.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
       detach: z.boolean().default(false).describe('Launch the wake loop in a detached background process that survives the current terminal or parent process exiting. Recommended for long-lived waits and recursive follow-up wakes.'),

@@ -169,7 +169,7 @@ function normalizePathname(pathname: string): string {
 }
 
 function extractChatId(pathname: string): string | null {
-  const match = normalizePathname(pathname).match(/^\/c\/([^/?#]+)$/u);
+  const match = normalizePathname(pathname).match(/^(?:\/c|\/g\/[^/?#]+\/c)\/([^/?#]+)$/u);
   return match?.[1] ?? null;
 }
 

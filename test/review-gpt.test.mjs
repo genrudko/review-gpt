@@ -537,6 +537,27 @@ test('detached wake command args preserve recursive prompt overrides', async (t)
   assert.equal(args[captureMetadataIndex + 1], 'audit-packages/review.md.capture.json');
 });
 
+test('thread export accepts a Project conversation URL before touching the browser', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, [
+    'thread',
+    'export',
+    '--chat-url',
+    'https://chatgpt.com/g/g-p-project-slug/c/project-thread',
+    '--browser-endpoint',
+    'http://127.0.0.1:1',
+    '--output',
+    'out.json',
+  ]);
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}`,
+    /Expected a full ChatGPT conversation URL like https:\/\/chatgpt\.com\/c\/<thread-id>/,
+  );
+});
+
 test('thread export rejects a non-conversation chat URL before touching the browser', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
