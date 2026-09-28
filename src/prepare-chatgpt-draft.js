@@ -6703,6 +6703,8 @@ async function main() {
     throw new Error('ChatGPT session is not authenticated in the managed browser profile. Sign in and retry.');
   }
 
+  await hardRefreshInitialPageForAuthRetry();
+
   currentStage = 'initial-ready';
   recordStage();
   const initialReady = await waitForDraftComposerReady(false);

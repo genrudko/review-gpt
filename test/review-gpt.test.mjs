@@ -2180,6 +2180,19 @@ test('response stability only accrues across quiet polls', () => {
   );
 });
 
+test('wake send hard-refreshes the exact ChatGPT thread before composer readiness', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const navigateIndex = source.indexOf("const navigation = await cdp('Page.navigate', { url: chatgptUrl });");
+  const authIndex = source.indexOf("const authCheck = await retryTransientUnauthenticatedSession", navigateIndex);
+  const refreshIndex = source.indexOf("await hardRefreshInitialPageForAuthRetry();", authIndex);
+  const readyIndex = source.indexOf("currentStage = 'initial-ready';", authIndex);
+
+  assert.ok(navigateIndex >= 0);
+  assert.ok(authIndex > navigateIndex);
+  assert.ok(refreshIndex > authIndex);
+  assert.ok(readyIndex > refreshIndex);
+});
+
 test('response capture hard-refreshes on a ten-minute cadence', () => {
   const startedAt = 1_000;
 
