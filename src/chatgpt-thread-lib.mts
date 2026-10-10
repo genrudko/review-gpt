@@ -56,6 +56,9 @@ const {
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
 const BROWSER_ENDPOINT_REQUEST_TIMEOUT_MS = 10_000;
+const CDP_CONNECT_TIMEOUT_MS = 8_000;
+const CDP_COMMAND_TIMEOUT_MS = 8_000;
+const EXPORT_PAGE_READY_TIMEOUT_MS = 18_000;
 const TARGET_READY_TIMEOUT_MS = 60_000;
 const TARGET_READY_POLL_MS = 750;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -136,6 +139,8 @@ export type ThreadContentState = {
   messageCount: number;
   readyState: string;
   title: string;
+  loginRequired?: boolean;
+  authChallenge?: boolean;
 };
 
 export type ThreadAttachmentDownloadSelector = {
@@ -169,8 +174,12 @@ function normalizePathname(pathname: string): string {
 }
 
 function extractChatId(pathname: string): string | null {
-  const match = normalizePathname(pathname).match(/^\/c\/([^/?#]+)$/u);
-  return match?.[1] ?? null;
+  // ChatGPT redirects project-owned /c/<id> threads to /g/<project>/c/<id>.
+  // Compare the exact conversation id; never mistake a project home for a chat.
+  const path = normalizePathname(pathname);
+  return path.match(/^\/c\/([^/?#]+)$/u)?.[1]
+    ?? path.match(/^\/g\/[^/?#]+\/c\/([^/?#]+)$/u)?.[1]
+    ?? null;
 }
 
 function scoreThreadTargetUrl(targetUrl: string | undefined, chatUrl: string): number {
@@ -340,13 +349,27 @@ export class CdpClient {
 
   private readonly ws: WebSocket;
 
-  constructor(url: string) {
+  private readonly commandTimeoutMs: number;
+
+  constructor(url: string, timeouts: { connectMs?: number; commandMs?: number } = {}) {
+    this.commandTimeoutMs = timeouts.commandMs ?? CDP_COMMAND_TIMEOUT_MS;
+    const connectTimeoutMs = timeouts.connectMs ?? CDP_CONNECT_TIMEOUT_MS;
+    if (this.commandTimeoutMs <= 0 || connectTimeoutMs <= 0) {
+      throw new Error('CDP deadlines must be positive.');
+    }
     this.ws = new WebSocket(url);
     this.ready = new Promise((resolve, reject) => {
       let opened = false;
+      const connectTimer = setTimeout(() => {
+        const error = new Error(`Timed out opening CDP WebSocket after ${connectTimeoutMs}ms`);
+        reject(error);
+        this.failPending(error);
+        this.ws.close();
+      }, connectTimeoutMs);
       this.ws.addEventListener(
         'open',
         () => {
+          clearTimeout(connectTimer);
           opened = true;
           resolve();
         },
@@ -357,6 +380,7 @@ export class CdpClient {
         () => {
           const error = new Error(opened ? 'CDP socket errored unexpectedly.' : 'CDP socket failed to open.');
           if (!opened) {
+            clearTimeout(connectTimer);
             reject(error);
           }
           this.failPending(error);
@@ -368,6 +392,7 @@ export class CdpClient {
         () => {
           const error = new Error(opened ? 'CDP socket closed unexpectedly.' : 'CDP socket closed before opening.');
           if (!opened) {
+            clearTimeout(connectTimer);
             reject(error);
           }
           this.failPending(error);
@@ -471,25 +496,34 @@ export class CdpClient {
     const id = this.nextId;
     this.nextId += 1;
     return await new Promise<T>((resolve, reject) => {
-      const removeTerminalListener = this.onTerminalError((error) => {
+      let removeTerminalListener = () => {};
+      const cleanup = () => {
+        clearTimeout(commandTimer);
         this.pending.delete(id);
+        removeTerminalListener();
+      };
+      const commandTimer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for CDP command ${method} after ${this.commandTimeoutMs}ms`));
+      }, this.commandTimeoutMs);
+      removeTerminalListener = this.onTerminalError((error) => {
+        cleanup();
         reject(error);
       });
       this.pending.set(id, {
         reject: (error) => {
-          removeTerminalListener();
+          cleanup();
           reject(error);
         },
         resolve: (value) => {
-          removeTerminalListener();
+          cleanup();
           resolve(value as T);
         },
       });
       try {
         this.ws.send(JSON.stringify({ id, method, params }));
       } catch (error) {
-        this.pending.delete(id);
-        removeTerminalListener();
+        cleanup();
         reject(normalizeError(error, `Failed to send CDP command ${method}.`));
       }
     });
@@ -598,7 +632,19 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
     title: document.title,
     bodyLength: (document.querySelector('main') ?? document.body)?.innerText?.length ?? 0,
     articleCount: (document.querySelector('main') ?? document).querySelectorAll('article').length,
-    messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
+    messageCount: (document.querySelector('main') ?? document).querySelectorAll(
+      '[data-message-author-role], [data-turn-key], [data-user-message-bubble]',
+    ).length,
+    loginRequired: (() => {
+      const messageCount = document.querySelectorAll(
+        '[data-message-author-role], [data-turn-key], [data-user-message-bubble]',
+      ).length;
+      if (messageCount > 0) return false;
+      const text = String(document.body?.innerText || '');
+      return /Log in to get answers based on saved chats|Sign up for free/iu.test(text)
+        && /Log in|Sign in|Войти/iu.test(text);
+    })(),
+    authChallenge: /Just a moment|Cloudflare/iu.test(String(document.title || '')),
     attachmentButtonCount: (() => {
       const root = document.querySelector('main') ?? document.body;
       if (!root) return 0;
@@ -1132,8 +1178,8 @@ async function createTargetLease(
           target,
         };
       }
-      if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
-        throw new Error(`Timed out waiting for a browser tab for ${chatUrl}`);
+      if (Date.now() - startedAt > 12_000) {
+        throw new Error('Timed out resolving newly created CDP target (12s)');
       }
       await sleep(TARGET_READY_POLL_MS);
     }
@@ -1225,6 +1271,12 @@ export async function waitForTargetContent(
   for (;;) {
     try {
       const state = await readThreadContentState(client);
+      if (state.authChallenge) {
+        throw new Error('Cloudflare challenge in managed ChatGPT browser');
+      }
+      if (state.loginRequired) {
+        throw new Error('Log in required in managed ChatGPT browser');
+      }
       if (threadContentLooksReady(state, chatUrl)) {
         return state;
       }
@@ -1289,6 +1341,12 @@ async function ensureThreadPageReady(
       }
       await sleep(Math.min(TARGET_READY_POLL_MS, Math.max(1, deadline - Date.now())));
     }
+  }
+  if (currentState.authChallenge) {
+    throw new Error('Cloudflare challenge in managed ChatGPT browser');
+  }
+  if (currentState.loginRequired) {
+    throw new Error('Log in required in managed ChatGPT browser');
   }
   if (options.forceReload !== true && threadContentLooksReady(currentState, chatUrl)) {
     return currentState;
@@ -1566,6 +1624,7 @@ export async function exportThreadSnapshot(
         await client.send('Runtime.enable');
         await ensureThreadPageReady(client, chatUrl, {
           forceReload: options.forceReload,
+          timeoutMs: EXPORT_PAGE_READY_TIMEOUT_MS,
         });
         snapshot = await scopeCapturedThreadSnapshot(
           browserEndpoint,
@@ -1594,8 +1653,14 @@ export async function exportThreadSnapshot(
     exportSucceeded = true;
     return payload;
   } finally {
-    if (!exportSucceeded && targetLease.rehydrated) {
-      await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
+    if (!exportSucceeded && targetLease.created) {
+      // Failed preflight must not leak a newly created Chrome tab. Never close
+      // a pre-existing user tab; only the target owned by this CLI invocation.
+      try {
+        await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
+      } catch {
+        // Preserve the original export/authentication error.
+      }
     } else {
       await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
     }

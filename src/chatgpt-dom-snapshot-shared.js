@@ -8,6 +8,9 @@ const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   'article[data-testid*="conversation-turn-assistant"]',
   'div[data-testid*="conversation-turn-assistant"]',
   'section[data-testid*="conversation-turn-assistant"]',
+  // New ChatGPT project/DIL renderer: one assistant unit per turn, even
+  // when a response contains multiple DIL message blocks.
+  '[data-chatgpt-search-unit-key]:has([data-dil-message-id])',
 ].join(', ');
 
 const CHATGPT_USER_TURN_SELECTOR = [
@@ -20,6 +23,7 @@ const CHATGPT_USER_TURN_SELECTOR = [
   'article[data-testid*="conversation-turn-user"]',
   'div[data-testid*="conversation-turn-user"]',
   'section[data-testid*="conversation-turn-user"]',
+  '[data-user-message-bubble]',
 ].join(', ');
 
 const CHATGPT_USER_TURN_ATTACHMENT_SELECTOR = [
@@ -213,6 +217,11 @@ function sanitizeDeepResearchResponseText(value) {
 function threadStatusTextIndicatesBusy(value) {
   const normalizedText = normalizeComparableText(value);
   if (!normalizedText) {
+    return false;
+  }
+  // The thread's history pager is unrelated to model generation. On the
+  // current ChatGPT UI it stays visible even after an assistant turn finishes.
+  if (normalizedText === 'loading older messages') {
     return false;
   }
 

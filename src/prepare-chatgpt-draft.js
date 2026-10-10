@@ -79,9 +79,11 @@ const COMPOSER_TEXTAREA_SELECTORS = [
   'textarea:not([disabled])',
 ];
 const COMPOSER_EDITABLE_SELECTORS = [
-  '.ProseMirror',
+  // Only the chat composer. Project/Work views also contain a ProseMirror
+  // "Start writing" document editor, which must never receive wake prompts.
+  '[contenteditable="true"][data-composer-markdown]',
+  '[contenteditable="true"][aria-label="Ask ChatGPT"]',
   '[contenteditable="true"][data-virtualkeyboard="true"]',
-  '[contenteditable="true"][role="textbox"]',
   '[data-testid*="composer"] [contenteditable="true"]',
   'form [contenteditable="true"]',
 ];
@@ -2669,10 +2671,16 @@ async function main() {
     };
     const findComposerInput = () => {
       const nodes = [
-        ...TEXTAREA_SELECTORS.map((selector) => document.querySelector(selector)).filter(Boolean),
-        ...EDITABLE_SELECTORS.map((selector) => document.querySelector(selector)).filter(Boolean),
+        ...TEXTAREA_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))),
+        ...EDITABLE_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))),
       ];
-      return pickFirst(nodes);
+      const composerOnly = nodes.filter((node) =>
+        node instanceof HTMLElement &&
+        node.getAttribute('aria-label') !== 'Start writing' &&
+        (node.matches('[data-composer-markdown], [data-virtualkeyboard="true"], #prompt-textarea, textarea')
+          || Boolean(node.closest('form, [data-testid*="composer"]')))
+      );
+      return composerOnly.find(visible) || composerOnly[0] || null;
     };
     const findComposerRoot = (composerInput) =>
       (composerInput && composerInput.closest('[data-testid*="composer"], form')) ||
@@ -4972,9 +4980,11 @@ async function main() {
           'textarea:not([disabled])'
         ];
         const editableSelectors = [
+          '[contenteditable="true"][data-composer-markdown]',
+          '[contenteditable="true"][aria-label="Ask ChatGPT"]',
+          '[contenteditable="true"][data-virtualkeyboard="true"]',
           '[data-testid*="composer"] [contenteditable="true"]',
-          'form [contenteditable="true"]',
-          '[contenteditable="true"][role="textbox"]'
+          'form [contenteditable="true"]'
         ];
         const visible = (node) => {
           if (!node || typeof node.getBoundingClientRect !== 'function') return false;
@@ -4982,8 +4992,11 @@ async function main() {
           const style = window.getComputedStyle(node);
           return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
         };
-        const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-        const pickBySelectors = (selectors) => pickFirst(selectors.map((s) => document.querySelector(s)).filter(Boolean));
+        const pickFirst = (nodes) => nodes.find((node) => visible(node)) || null;
+        const pickBySelectors = (selectors) => pickFirst(
+          selectors.flatMap((s) => Array.from(document.querySelectorAll(s)))
+            .filter((node) => node.getAttribute('aria-label') !== 'Start writing')
+        );
 
         const value = ${promptLiteral};
         const appendText = (existing, next) => {
@@ -5011,7 +5024,8 @@ async function main() {
         }
         const editor = pickFirst([
           ...editorCandidates,
-          ...editableSelectors.map((s) => document.querySelector(s)).filter(Boolean)
+          ...editableSelectors.flatMap((s) => Array.from(document.querySelectorAll(s)))
+            .filter((node) => node.getAttribute('aria-label') !== 'Start writing')
         ]);
         if (!editor) {
           return { ok: false, reason: 'composer-input-not-found' };
@@ -5132,7 +5146,8 @@ async function main() {
         'textarea[placeholder*="Send a message"]',
         'textarea[aria-label="Message ChatGPT"]',
         'textarea:not([disabled])',
-        '.ProseMirror',
+        '[contenteditable="true"][data-composer-markdown]',
+        '[contenteditable="true"][aria-label="Ask ChatGPT"]',
         '[contenteditable="true"][data-virtualkeyboard="true"]',
       ];
       const turnSelector =
@@ -5180,10 +5195,11 @@ async function main() {
         return node.innerText || node.textContent || '';
       };
       const nodes = textareaSelectors
-        .map((selector) => document.querySelector(selector))
-        .filter(Boolean);
-      const visibleNodes = nodes.filter((node) => visible(node));
-      const activeNodes = visibleNodes.length > 0 ? visibleNodes : nodes;
+        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        .filter((node) => node.getAttribute('aria-label') !== 'Start writing');
+      // Never infer a staged wake prompt from the Work/document editor or a
+      // hidden duplicate composer. Only the visible chat input may commit.
+      const activeNodes = [...new Set(nodes)].filter(visible);
       const composerHasText = activeNodes.some((node) => String(readValue(node)).trim().length > 0);
       const composerSignature = signatureize(activeNodes.map((node) => readValue(node)).join('\\n')).slice(0, 320);
       const uploading = uploadSelectors.some((selector) =>
@@ -5691,7 +5707,8 @@ async function main() {
           'textarea[placeholder*="Send a message"]',
           'textarea[aria-label="Message ChatGPT"]',
           'textarea:not([disabled])',
-          '.ProseMirror',
+          '[contenteditable="true"][data-composer-markdown]',
+          '[contenteditable="true"][aria-label="Ask ChatGPT"]',
           '[contenteditable="true"][data-virtualkeyboard="true"]',
           '[contenteditable="true"][role="textbox"]',
         ];
@@ -5701,8 +5718,9 @@ async function main() {
           const style = window.getComputedStyle(node);
           return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
         };
-        const nodes = textareaSelectors.map((selector) => document.querySelector(selector)).filter(Boolean);
-        const target = nodes.find((node) => visible(node)) || nodes[0] || null;
+        const nodes = textareaSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+          .filter((node) => node.getAttribute('aria-label') !== 'Start writing');
+        const target = nodes.find((node) => visible(node)) || null;
         if (!target) {
           return { ok: false, reason: 'composer-not-found' };
         }
@@ -5749,7 +5767,8 @@ async function main() {
           'textarea[placeholder*="Send a message"]',
           'textarea[aria-label="Message ChatGPT"]',
           'textarea:not([disabled])',
-          '.ProseMirror',
+          '[contenteditable="true"][data-composer-markdown]',
+          '[contenteditable="true"][aria-label="Ask ChatGPT"]',
           '[contenteditable="true"][data-virtualkeyboard="true"]',
         ];
         const visible = (node) => {
@@ -5760,8 +5779,9 @@ async function main() {
         };
         const normalize = (value) => (value || '').toLowerCase();
         const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-        const textareas = textareaSelectors.map((selector) => document.querySelector(selector)).filter(Boolean);
-        const textarea = pickFirst(textareas);
+        const textareas = textareaSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+          .filter((node) => node.getAttribute('aria-label') !== 'Start writing');
+        const textarea = textareas.find(visible) || null;
         const composerRoot =
           (textarea && textarea.closest('[data-testid*="composer"], form')) ||
           document.querySelector('[data-testid*="composer"]') ||
